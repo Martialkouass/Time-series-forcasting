@@ -1,0 +1,655 @@
+---
+title: "Time Series Forecasting"
+author: "Martial KOUASSI"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+#Introduction
+
+Welcome to my report on time series forecasting to  forecast electricity consumption (kW) of one building for 2/21/2010. I will use the historic electricity consumption data from 1/1/2010 1:15 to 2/20/2010 23:45. Two forecasts should be returned : 
+    ##1. The first one without using outdoor temperature,
+    ##2. The second one using outdoor temperature.
+    
+I will follow the next steps:
+      - Use  Exponential Smoothing models to forcast electricity consumption
+      - Use SARIMA models to forcast electricity consumption
+            .The SARIMA model requires a variation of the data and its own EDA to estimate the model parameters
+      - Use neural network models and other machine learning models to forcast electricity consumption
+      - Use Use LSTM, deep LSTM and Dynamic regression model to forcast electricity consumption
+      - Compare the results from the different models, draw key insights and outline next steps
+      
+      
+
+
+#INSTALL PACKAGES
+```{r}
+install.packages("openxlsx")
+library(openxlsx)
+install.packages("readxl")
+library(readxl)
+```
+#LOAD AND PLOT THE DATA
+
+```{r}
+data = read_excel('2023-11-Elec-train.xlsx')
+plot(data)
+```
+
+#**Part 1: Forecast electricity consumption (kW) for 2/21/2010 without using outdoor temperature**
+
+let's plot and create the time series object
+
+```{r}
+library(forecast)
+library(ggplot2)
+elec = ts(data$`Power (kW)`)
+autoplot(elec)
+```
+
+##creation of ts object
+AS we have observations every 15 mins, we will make it by day. the frequency is 60*24/15=96
+```{r}
+elec_consum=ts(data[1:4891,2], start=c(1,6), end = c(51,96),frequency = 96)
+tail(elec_consum)
+```
+##ploting the data
+```{r}
+autoplot(elec_consum)+
+  ggtitle('KW per day')+
+  xlab('days')+
+  ylab('Consumption (KW)')
+```
+As we can see the plot above, it seems there are some outliers. We will try to handle it
+```{r}
+
+# Detect outliers in the time series
+outliers = which(elec_consum==0)
+
+# Print the detected outliers
+print (outliers)
+
+# Replace zero values with NA
+elec_consum_NA=elec_consum
+elec_consum_NA[outliers] <- NA
+
+library(imputeTS)
+
+# Plot the time series with detected outliers
+ggplot_na_distribution(elec_consum_NA)
+```
+# Impute missing values using interpolation
+
+```{r}
+elec_consum_i<- na.interp(elec_consum_NA)
+
+#plot after interpolation
+ggplot_na_distribution(elec_consum_i)
+
+
+# Plot the original and imputed time series
+plot.ts(elec_consum, main="Original Electricity Consumption", ylab="Consumption (kW)", col="blue", type="o")
+lines(elec_consum_i, col="red", type="o", lty=2)
+legend("topright", legend=c("Original", "Imputed"), col=c("blue", "red"), lty=1:2)
+
+# Print the imputed time series
+print(elec_consum_i[outliers])
+
+```
+Now we split our time series dataset in two sets: train 80% and test 20%
+Since I have 4891 observations, I will get:
+- for the train set : 4891 * 0.8 = 3907 observations ( from 1 to 41)
+- for the test set : 4891 * 0.2 = 984 observations (from 42 to 51)
+```{r}
+elec_consum_train= window(elec_consum_i, start=c(1,6), end=c(41,72))
+elec_consum_test= window(elec_consum_i, start=c(41,73), end=c(51,96))
+autoplot(elec_consum_train,series="Train set") + 
+  autolayer(elec_consum_test,series='Test set')+
+  ggtitle ('Electricity Consumption (kW) per hour') +
+  xlab('days') +
+  ylab('Consumption (kW)')
+```
+# Time-series models
+
+Once I've gained enough understanding of the time series data, I'm ready to create different models and check their accuracy on the predictions. In order to compare the results of the models, I will use the Mean Squared Error, which I implemented as follows:
+```{r}
+rmse = function(y_pred, y_true) {
+# Calculate ROOT Mean Squared Error (RMSE)
+  #
+  # Args:
+  #   y_true: vector of true values
+  #   y_pred: vector of predicted values
+  #
+  # Returns:
+  #   rmse: RMSE value for the given predicted values
+  
+
+  
+  # Calculate MSE
+  rmse = sqrt(mean((y_pred - y_true )^2))
+  return(rmse)
+}
+```
+
+# **Forecasting with exponential smoothing**
+
+We see a seasonal pattern, probably additive. Because of the frequency limit of 24, we cannot fit a Holt-Winters additive model
+
+
+# ** Forcasting with SARIMA models**
+  # *** Automatically***
+  
+We choose automaticaly an SARIMA model
+```{r}
+
+elec_consum_aut=auto.arima(elec_consum_train,lambda = "auto")
+prev_aut=forecast(elec_consum_aut, h=984)
+
+
+#plot in a graph
+autoplot(elec_consum_train,series="Train set") + 
+  autolayer(elec_consum_test,series='Test set')+
+  autolayer(prev_aut$mean,series='auto arima')+
+  ggtitle ('Electricity Consumption (kW) per day') +
+  xlab('days') +
+  ylab('Consumption (kW)')
+
+summary(elec_consum_aut)
+```
+Let's evaluate the SARIMA (5,0,0)(0,1,0)[96] model by computing the RMSE
+```{r}
+sarima_model = rmse(prev_aut$mean,elec_consum_test)
+sarima_model
+```
+The prediction from this model doesn't look bad, but let check if we can improve it.
+
+# ** Forcasting with Neural Network models**
+We can try  a auto-regressive neural network
+
+```{r}
+elec_consum_NN =nnetar(elec_consum_train, lambda = 'auto')
+prev_NN=forecast(elec_consum_NN, h=984)
+
+#plot in a graph
+autoplot(prev_NN) + 
+  autolayer(elec_consum_test,series='Test set')+
+  autolayer(prev_NN$mean, series="Neural Network forecasts")+
+  
+  xlab('days') +
+  ylab('Consumption (kW)')
+
+
+summary(elec_consum_NN)
+
+
+```
+Let's evaluate the Neural Network model by computing the RMSE
+
+```{r}
+neural_network = rmse(prev_NN$mean,elec_consum_test)
+neural_network
+```
+The score is not better that the previous model (SARIMA), we will try other machine learning models
+
+#** Forcasting with Random forest**
+
+We based our forecast on the 96 previous observations, but that can be optimized (by CV)
+```{r}
+data=as.vector(elec_consum_train)[1:97]
+for (i in 1:(length(as.vector(elec_consum_train))-97)){
+data=rbind(data,as.vector(elec_consum_train)[(i+1):(i+97)])
+}
+```
+
+We fit the model
+
+```{r}
+library(randomForest)
+elec_consum_RF=randomForest(x=data[,-97], y=data[,97])
+```
+
+And then sequentially forecast the next 984 values
+
+```{r}
+pred=rep(NULL,984)
+newdata=tail(elec_consum_train,96)
+for (t in 1:984){
+pred[t]=predict(elec_consum_RF,newdata=newdata)
+newdata=c(newdata[-1],pred[t])
+}
+prev_RF=ts(pred,start=c(41,73), end=c(51,96),frequency = 96)
+
+```
+
+Let's evaluate the Random Forest model by computing the RMSE
+```{r}
+Random_Forest = rmse(prev_RF,elec_consum_test)
+Random_Forest
+```
+the score with random forest model is not bad, but not better than SARIMA.
+```{r}
+#plot in a graph
+autoplot(elec_consum_train, series = 'train set') + 
+  autolayer(elec_consum_test,series='Test set')+
+  autolayer(prev_RF, series="Random Forest forecasts")+
+  ggtitle ('Electricity Consumption (kW) per day') +
+  xlab('days') +
+  ylab('Consumption (kW)')
+```
+let's try if we get better result with XG BOOST
+
+#** Forcasting with XG Boost##
+
+with default values, which should have to be optimized by Cross Validation.
+
+```{r}
+install.packages("xgboost")
+library("xgboost")
+model<- xgboost(data = data[,1:96], label = data[,97],
+max_depth = 10, eta = .5, nrounds = 200,
+nthread = 2, objective = "reg:squarederror")
+
+```
+
+And then sequentially forecast the next 984 values
+
+```{r}
+pred_XGB=rep(NULL,984)
+newdata=tail(elec_consum_train,96)
+for (t in 1:984){
+pred_XGB[t]=predict(model,matrix(newdata,1,96))
+newdata=c(newdata[-1],pred[t])
+}
+prev_XGB=ts(pred_XGB,start=c(41,73), end=c(51,96),frequency = 96)
+```
+
+Let's evaluate the XG BOOST model by computing the RMSE
+```{r}
+XG_boost = rmse(prev_XGB,elec_consum_test)
+XG_boost
+```
+#First conclusion
+
+let's resume all score we get and choose the best one.
+
+```{r}
+cat('Forecasting results : ' , '\n')
+cat('RMSE with SARIMA model is:', sarima_model ,'\n')
+cat('RMSE with Neural Network model is:', neural_network ,'\n')
+cat('RMSE with Random Forest is:', Random_Forest ,'\n')
+cat('RMSE with XGB BOOST model is:', XG_boost ,'\n')
+
+```
+SARIMA model (5,0,0)(0,1,0)[96] is definitely our best model so far.
+
+let's clearly see the prediction
+
+```{r}
+autoplot(elec_consum_test,series='Test set') + 
+  autolayer(prev_aut$mean,series='SARIMA')+
+  ggtitle ('Electricity Consumption (kW) per day') +
+  xlab('Time (days)') +
+  ylab('Consumption (kW)')
+```
+We will now forecast the electricity consumption (kW) for 2/21/2010 based on the whole previous consumption information (ARIMA (5,0,0)(0,1,0)[96]).  
+The prediction interval = 24 hr for the entire day of 2/21/2010.So h =(24*60)/15 = 96 observations 
+
+```{r}
+elec_consum_21 = Arima(elec_consum_i, order=c(5,0,0), seasonal=c(0,1,0),lambda = "auto")
+prev_consum_21 = forecast(elec_consum_21, h = 96)
+autoplot(elec_consum,series="Electricity Consumption 1/1/2010 -  2/20/2010") + 
+  autolayer(prev_consum_21$mean,series='SARIMA Prediction for 2/21/2010')+
+  ggtitle ('Electricity Consumption (kW) per day') +
+  xlab('Time (days)') +
+  ylab('Consumption (kW)')
+```
+#Prediction results
+
+```{r}
+print(pred_consum_21$mean)
+```
+
+
+```{r}
+forecasts <- data.frame(
+  Timestamp = seq(from = as.POSIXct("2010-02-21 00:00"), by = "15 min", length.out = 96),
+  Forecast = as.numeric(round(prev_consum_21$mean,1))
+)
+# Create a new workbook
+wb <- createWorkbook()
+
+# Add a worksheet
+addWorksheet(wb, "Forecasts")
+
+# Write the data to the worksheet
+writeData(wb, "Forecasts", forecasts)
+
+
+# Save the workbook
+saveWorkbook(wb, "Martial_KOUASSI.xlsx", overwrite = TRUE)
+
+# Output message
+print("Forecasts saved to Martial_KOUASSI.xlsx")
+
+```
+#**Part 2: Forecast electricity consumption (kW) for 2/21/2010 by using outdoor temperature**
+
+let's create the time series object
+```{r}
+elec_consum_t=ts(data[1:4891,2:3], start=c(1,6), end = c(51,96),frequency = 96,)
+tail(elec_consum_t)
+```
+#ploting the ts
+```{r}
+library(fpp2)
+autoplot(elec_consum_t)
+```
+#HANDLE OUTLIERS
+
+```{r}
+outlierst=which(elec_consum_t==0)
+elec_consum_t[outlierst]= elec_consum_i[outliers]
+elec_consum_t[4604:4614,]
+```
+We split into train and test
+```{r}
+elec_consumt_train= window(elec_consum_t, start=c(1,6), end=c(41,72))
+elec_consumt_test= window(elec_consum_t, start=c(41,73), end=c(51,96))
+
+```
+
+#**Forecasting with ARIMA model**
+
+We will use a dynamic regression model for forecasting electricity consumption, using temperature
+as external covariates. The order of the ARIMA model for the residual part is automatically selected
+
+```{r}
+ARIMA=auto.arima(elec_consumt_train[,"Power (kW)"],xreg=elec_consumt_train[,2])
+prev_ARIMA=forecast(ARIMA,h=984,xreg=elec_consumt_test[,2])
+autoplot(elec_consumt_test[,"Power (kW)"])+autolayer(prev_ARIMA$mean)
+```
+let's evaluate this model
+```{r}
+arima_score = rmse(prev_ARIMA$mean,elec_consumt_test[,"Power (kW)"])
+arima_score
+```
+we can see that using covariates allows us to improve the forecasting.
+But if we check the residual, there is still some autocorrelations:
+
+```{r}
+summary(ARIMA)
+```
+```{r}
+checkresiduals(ARIMA)
+
+```
+We can try to find a better model manually. Let’s have a look to the relationship between consumption and
+Temperature
+
+```{r}
+plot(elec_consumt_train[,"Temp (C°)"],elec_consumt_train[,"Power (kW)"])
+
+```
+There seems to be a visible pattern where the electricity consumption varies with temperature.
+As temperature increases, there is a notable shift in the distribution of power consumption.
+there are two distinct bands of power consumption values, one centered around 200 kW and the other around 300 kW.
+we will :
+- First incorporate time-dependent patterns and seasonality in our analysis.
+- Second explore clustering techniques to identify different operational states or patterns in the data.
+
+**incorporate time-dependent patterns and seasonality in our analysis**
+
+
+```{r}
+
+effect_temperature_on_consum=tslm(elec_consumt_train[,'Power (kW)']~elec_consumt_train[,'Temp (C°)']+trend+season,data=elec_consumt_train)
+summary(effect_temperature_on_consum)
+```
+All the feature seems significant.
+Let’s now have a look to the residual
+
+```{r}
+checkresiduals(effect_temperature_on_consum)
+
+```
+```{r}
+tsdisplay(effect_temperature_on_consum$residuals)
+
+```
+The ACP and PACF look like those of an AR11 model: exponential decrease of the ACF and significant
+PCA at lag 5. We can test it:
+
+```{r}
+tmp=effect_temperature_on_consum$residuals
+effect_temperature_on_consum2=auto.arima(tmp,lambda = 'auto')
+checkresiduals(effect_temperature_on_consum2)
+```
+```{r}
+effect_temperature_on_consum3=arima(tmp,order=c(1,0,1), seasonal = c(0,1,2))
+checkresiduals(effect_temperature_on_consum3)
+```
+```{r}
+fit=Arima(elec_consumt_train[,"Power (kW)"],xreg=elec_consumt_train[,2],order=c(1,0,1),seasonal = c(0,1,2))
+checkresiduals(fit)
+
+```
+ We can perform forecasting:
+```{r}
+elec_test=cbind(power_consum=elec_consumt_test[,1],Temp=elec_consumt_test[,2])
+prev_t=forecast(fit,h=984,xreg=elec_consumt_test[,2])
+autoplot(elec_test[,"power_consum"], series="true data")+autolayer(prev_t$mean,series="SARIMA with covariates")
+
+```
+
+let evaluate this model
+```{r}
+SARIMA_COVARIATES= rmse(prev_t$mean,elec_test[,"power_consum"])
+SARIMA_COVARIATES
+```
+ The result are better than those obtained with the auto.arima function.
+
+Let's try a a Neural Network model with covariates.
+
+#Neural network model with covariate
+```{r}
+NNAR=nnetar(elec_consumt_train[,"Power (kW)"],xreg=elec_consumt_train[,2])
+prev_nnar=forecast(NNAR,h=984,xreg=elec_consumt_test[,2])
+autoplot(elec_test[,'power_consum'])+autolayer(prev_nnar$mean,series="NNAR using Temperature")
+
+```
+
+Evaluate
+```{r}
+NNAR_SCORE=rmse(prev_nnar$mean,elec_test[,'power_consum'])
+NNAR_SCORE
+```
+NNAR model with covariates does not improve the forecast.
+
+#Second conclusion
+
+let's resume all score we get and choose the best one.
+
+```{r}
+cat('Forecasting results whit temperature : ' , '\n')
+cat('RMSE with Auto Arima is:', arima_score,'\n')
+cat('RMSE with SARIMA model is:', SARIMA_COVARIATES ,'\n')
+cat('RMSE with Neural Network model is:', NNAR_SCORE ,'\n')
+```
+The best one is SARIMA model.
+
+
+
+#**explore clustering techniques to identify different operational states or patterns in the data**
+
+Here is an hypothesis:
+ the two distinct bands of power consumption values are related to periods of the day.
+ That means consumption typically varies between daytime and nighttime due to different activities and behaviors.
+ 
+ we fist try to validate this hypothesis
+ 
+```{r}
+data1= data.frame(
+  Timestamp = seq(from = as.POSIXct("2010-01-01 01:15"),  by = "15 min", length.out=4891),
+  power = elec_consum_t[,1], Temp =elec_consum_t[,2]
+)
+head(data1)
+```
+#**Kmeans with Euclidean distance
+We can apply the usual kmeans algorithm using the Euclidean
+distance between time series:
+
+```{r}
+library(cluster)
+
+# Using K-means clustering to identify 2 clusters
+set.seed(123)
+kmeans_result= kmeans(elec_consum_t, centers = 2)
+```
+
+```{r}
+install.packages('FactoMineR')
+library(FactoMineR)
+# Remove non-quantitative columns
+data1_quant = data1[ , !(names(data1) %in% c("Timestamp"))]
+# Perform PCA
+pca= PCA(data1_quant, graph = FALSE)
+# Plot the PCA results with k-means clusters
+plot(pca,choix = "ind",col.ind = kmeans_result$cluster,
+graph.type = "classic")
+
+```
+The PCA graph indicates that the two distinct clusters of power consumption values likely correlate with different periods of the day, supporting the hypothesis. This pattern is consistent with typical residential electricity usage, where there are clear differences between daytime and nighttime power consumption due to varying activities and behaviors.
+
+
+```{r}
+library(ggplot2)
+
+data1$Cluster= kmeans_result$cluster
+
+data1$Hour <- as.numeric(format(data1$Timestamp, "%H"))
+# Plot the distribution of clusters over  the day
+ggplot(data1, aes(x = Hour, fill = as.factor(Cluster))) +
+  geom_histogram(binwidth = 1, position = "dodge", alpha = 0.7) +
+  scale_fill_manual(values = c("red", "black"), name = "Cluster") +
+  labs(title = "Distribution of Clusters Over Hours of the Day",
+       x = "Hour of the Day",
+       y = "Frequency") +
+  theme_minimal()
+```
+The cluster 1 predominantly appears between 10:00 and 20:00 hours.
+The high frequency during these hours indicates that Cluster 1 corresponds to the daytime period when people are generally awake and active, leading to higher power consumption.
+The cluster 2 predominantly appears between 00:00 and 09:00 hours, and then again around 21:00 to 23:00 hours.
+The high frequency during these hours suggests that Cluster 2 corresponds to the nighttime period when people are generally sleeping, leading to lower power consumption.
+The hypothesis that the distinct bands of power consumption values correspond to different periods of the day (daytime and nighttime) is supported by the plot. The red cluster represents the higher power consumption during daytime, while the black cluster represents lower power consumption during nighttime.
+
+Now, we will try to build forecast model
+
+```{r}
+#create ts object
+elec_ts = ts(data1[1:4891,2:4], start=c(1,6), end = c(51,96),frequency = 96)
+```
+
+Split our time series data set
+```{r}
+elec_ts_train= window(elec_ts, start=c(1,6), end=c(41,72))
+elec_ts_test= window(elec_ts, start=c(41,73), end=c(51,96))
+
+```
+
+**AUTO ARIMA**
+We will use a dynamic regression model for forecasting electricity consumption, using temperature and cluster
+as external covariates. The order of the ARIMA model for the residual part is automatically selected
+```{r}
+fit_ts=auto.arima(elec_ts_train[,"power"],xreg=elec_ts_train[,2:3])
+prev_ts=forecast(fit_ts,h=984,xreg=elec_ts_test[,2:3])
+autoplot(elec_ts_test[,"power"])+autolayer(prev_ts$mean)
+
+```
+let's evaluate:
+```{r}
+Autarima_ts_score = rmse(prev_ts$mean,elec_ts_test[,"power"])
+Autarima_ts_score
+```
+we get better score than all the previous models.
+
+```{r}
+checkresiduals(fit_ts)
+
+```
+Most of the residuals' autocorrelations are within the bounds, suggesting that the ARIMA model has captured the majority of the temporal structure. However, there is one significant spike at lag 96 which includes seasonal components explicitly.  We will add one order MA in the seasonal pattern:
+
+let's improve it:
+
+```{r}
+fit2_ts=Arima(elec_ts_train[,"power"],xreg=elec_ts_train[,2:3],order=c(5,0,1),seasonal = c(0,1,1))
+checkresiduals(fit2_ts)
+```
+The residuals are not too significant
+
+let ' evaluate it:
+```{r}
+prev2_ts=forecast(fit2_ts,h=984,xreg=elec_ts_test[,2:3])
+autoplot(elec_ts_test[,"power"])+autolayer(prev2_ts$mean)
+Sarima_ts_score = rmse(prev2_ts$mean,elec_ts_test[,"power"])
+Sarima_ts_score
+```
+The result are better than those obtained with the auto.arima function.
+Finally, we can compare with a NNAR model with covariates, but it does not improve the forecast.
+
+```{r}
+fit_NN=nnetar(elec_ts_train[,"power"],xreg=elec_ts_train[,2:3])
+prev_nnetar=forecast(fit_NN,h=984,xreg=elec_ts_test[,2:3])
+autoplot(elec_ts_test[,"power"])+autolayer(prev_nnetar$mean,series="NNAR using Temperature and Cluster")
+
+```
+```{r}
+summary(fit_NN)
+NNETAR_score= rmse(prev_nnetar$mean,elec_ts_test[,"power"])
+NNETAR_score
+```
+The RMSE with Neural Network model using temperature and cluster is better than the two others:
+67.76304  for Neural Network model without any covariate
+74.06262 for Neural Network model using temp
+17.23758 for Neural Network model using temp and period of the day(day or night).
+
+
+#Third conclusion
+
+let's resume all score we get and choose the best one.
+
+```{r}
+cat('Forecasting results with temperature + Cluster : ' , '\n')
+cat('RMSE with Auto Arima is:', Autarima_ts_score,'\n')
+cat('RMSE with SARIMA model is:', Sarima_ts_score ,'\n')
+cat('RMSE with Neural Network model is:', NNETAR_score ,'\n')
+```
+
+We will now forecast the electricity consumption (kW) for 2/21/2010 based on the whole previous consumption information (ARIMA (5,0,1)(0,1,1)[96]).  
+The prediction interval = 24 hr for the entire day of 2/21/2010.So h =(24*60)/15 = 96 observations 
+
+create new ts for forecast
+```{r}
+datatoforcast= data.frame(
+  Timestamp = seq(from = as.POSIXct("2010-02-21 00:00"),  by = "15 min", length.out=96),
+  power = data$`Power (kW)`[4892:4987], Temp =data$`Temp (C°)`[4892:4987]
+)
+head(datatoforcast)
+```
+```{r}
+datatoforcast$Cluster= predict(kmeans_result, datatoforcast[,1])
+datatoforcast
+```
+
+
+
+
+#*CONCLUSION*
+
+```{r}
+cat('Forecasting results : ' , '\n')
+cat('RMSE with SARIMA model is:', sarima_model ,'\n')
+cat('RMSE with Neural Network model is:', NNETAR_score ,'\n')
+cat('RMSE with Random Forest is:', Random_Forest ,'\n')
+cat('RMSE with XGB BOOST model is:', XG_boost ,'\n')
+```
+
