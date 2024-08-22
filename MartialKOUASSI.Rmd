@@ -1,0 +1,153 @@
+---
+title: "MartialKOUASSI"
+author: "Martial KOUASSI"
+date: "2024-08-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+
+Welcome to my report on time series forecasting to  forecast electricity consumption (kW) of one building for 2/21/2010 using a Deep Neural Network in R. I will use the historic electricity consumption data from 1/1/2010 1:15 to 2/20/2010 23:45.
+
+I will follow the next steps:
+
+- Find the differents cluster and assign them 
+- Use a deep neural network to forcast
+
+
+#INSTALL PACKAGES
+```{r}
+install.packages("openxlsx")
+library(openxlsx)
+install.packages("readxl")
+library(readxl)
+```
+
+
+
+#LOAD AND PLOT THE DATA
+
+```{r}
+data = read_excel('2023-11-Elec-train.xlsx')
+```
+
+
+let's create the time series object
+```{r}
+elec_consum_t=ts(data[1:4891,2:3], start=c(1,6), end = c(51,96),frequency = 96,)
+tail(elec_consum_t)
+```
+
+#ploting the ts
+```{r}
+library(fpp2)
+autoplot(elec_consum_t)
+```
+
+
+```{r}
+data1= data.frame(
+  Timestamp = seq(from = as.POSIXct("2010-01-01 01:15"),  by = "15 min", length.out=4891),
+  power = elec_consum_t[,1], Temp =elec_consum_t[,2]
+)
+head(data1)
+```
+
+
+We can apply the usual kmeans algorithm using the Euclidean
+distance between time series:
+
+
+```{r}
+install.packages("NbClust")
+library(cluster)
+library(ggplot2)
+library(NbClust)
+library(factoextra)
+```
+Let's chose the optimal number of cluster
+
+```{r}
+data1_clean <- na.omit(data1)
+
+fviz_nbclust(data1_clean[,2:3], kmeans, method = "gap_stat") + 
+  geom_vline(xintercept = 3, linetype = 2) +
+  labs(subtitle = "Elbow Method with gap_stat ")
+fviz_nbclust(data1_clean[,2:3], kmeans, method = "wss") + 
+  geom_vline(xintercept = 3, linetype = 2) +
+  labs(subtitle = "Elbow Method with WSS")
+fviz_nbclust(data1_clean[,2:3], kmeans, method = "silhouette") + 
+  geom_vline(xintercept = 3, linetype = 2) +
+  labs(subtitle = "Elbow Method with silhouette")
+```
+The optimal number of cluster is 3
+
+
+```{r}
+# Using K-means clustering with 3 clusters
+set.seed(123)
+data_k = kmeans(data1[,2:3], centers = 3, nstart = 25)
+
+# Add the cluster  to our dataset
+data1$Cluster = data_k$cluster
+```
+
+Visualize the Clusters
+
+```{r}
+ggplot(data1, aes(x = power, y = Temp, color = as.factor(Cluster))) +
+  geom_point() +
+  scale_color_manual(values = c("red", "green", "blue")) +
+  labs(title = "K-Means Clustering with 3 Clusters", x = "power", y = "temp", color = "Cluster") +
+  theme_minimal()
+```
+
+```{r}
+# Summary statistics for each cluster
+aggregate(data1[, 2:3], by = list(Cluster = data1$Cluster), FUN = mean)
+```
+We have 3 different clusters corresponding to different periods of the day
+
+
+
+
+ create ts object, clean and split
+ 
+```{r}
+data_ts = ts(data1[,2:4],, start=c(1,6), end = c(51,96),frequency = 96)
+
+# Detect outliers in the time series
+outliers = which(data_ts==0)
+
+# Replace zero values with NA
+data_NA=data_ts
+data_NA[outliers] = NA
+
+# Impute missing values using interpolation
+data_NA[,1] = na.interp(data_NA[,1])
+data_clean= data_NA
+
+#split
+data_train= window(data_clean, start=c(1,6), end=c(41,72))
+data_test= window(data_clean, start=c(41,73), end=c(51,96))
+```
+
+#Neural network model with covariate
+```{r}
+NNAR=nnetar(data_train[,"power"],xreg=data_train[,2:3])
+prev_nnar=forecast(NNAR,h=984,xreg=data_test[,2:3])
+autoplot(data_test[,'power'])+autolayer(prev_nnar$mean,series="NNAR using Temperature")
+
+```
+
+Evaluate
+```{r}
+NNAR_SCORE=rmse(prev_nnar$mean,data_test[,'power'])
+NNAR_SCORE
+```
+NNAR model with covariates is better . 
+
